@@ -19,8 +19,8 @@
          (.startsWith (str first-char name) text'))))))
 
 (defn get-request-suggestions
-  [{:keys [current-chat-id] :as db} text]
-  (let [requests (get-in db [:chats current-chat-id :requests])]
+  [{:keys [chats current-chat-id] :as db} text]
+  (let [requests (get-in chats [current-chat-id :requests])]
     (->> requests
          (map (fn [{:keys [type] :as v}]
                 (assoc v :name (get-in db [:contacts/contacts current-chat-id :responses type :name]))))

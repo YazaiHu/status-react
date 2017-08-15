@@ -13,6 +13,60 @@
             [status-im.utils.random :as random]
             [status-im.i18n :as i18n]))
 
+;;;; Helper functions
+
+(defn update-suggestions
+  "Update suggestions for current chat input, takes db as the only argument
+  and returns map with keys :db (new db with up-to-date suggestions) and (optionally)
+  :chat-fx/call-jail-function with jail function call params, if request to jail needs
+  to be made as a result of suggestions update."
+  [{:keys [chats current-chat-id] :as db}]
+  (let [chat-text       (str/trim (or (get-in chats [current-chat-id :input-text]) ""))
+        requests        (->> (suggestions/get-request-suggestions db chat-text)
+                             (remove (fn [{:keys [type]}]
+                                       (= type :grant-permissions))))
+        commands        (suggestions/get-command-suggestions db chat-text)
+        global-commands (suggestions/get-global-command-suggestions db chat-text)
+        all-commands    (->> (into global-commands commands)
+                             (remove (fn [[k {:keys [hidden?]}]] hidden?))
+                             (into {}))
+        {:keys [dapp?]} (get-in db [:contacts/contacts current-chat-id])
+        new-db          (cond-> db
+                          true (assoc-in [:chats current-chat-id :request-suggestions] requests)
+                          true (assoc-in [:chats current-chat-id :command-suggestions] all-commands)
+                          (and dapp?
+                               (str/blank? chat-text))
+                          (assoc-in [:chats current-chat-id :parameter-box :message] nil))]
+    (cond-> {:db new-db}
+      (when (and dapp?
+                 (not (str/blank? chat-text))
+                 (every? empty? [requests commands])))
+      (assoc :chat-fx/call-jail-function {:chat-id    current-chat-id
+                                          :function   :on-message-input-change
+                                          :parameters {:message chat-text}
+                                          :context    {:data data
+                                                       :from (get-in db [:local-storage current-chat-id])}}))))
+
+(defn set-chat-input-text
+  "Set input text for current-chat and updates suggestions relevant to current input.
+  Takes db, input text and `:append?` flag as arguments and returns re-frame effects map
+  with at least :db key.
+  When `:append?` is false or not provided, resets the current chat input with input text,
+  otherwise input text is appended to the current chat input."
+  [{:keys [current-chat-id chats] :as db} new-input & {:keys [append?]}]
+  (let [current-input (get-in chats [current-chat-id :input-text])
+        new-db        (assoc-in db
+                                [:chats current-chat-id :input-text]
+                                (input-model/text->emoji (if append?
+                                                           (str current-input new-input)
+                                                           new-input)))]
+    (update-suggestions new-db)))
+
+(defn set-chat-input-metadata
+  "Set input metadata for current-chat. Takes db and metadata and returns updated db."
+  [{:keys [current-chat-id] :as db} metadata]
+  (assoc-in db [:chats current-chat-id :input-metadata] data))
+
 ;;;; Coeffects
 
 (reg-cofx
@@ -81,57 +135,52 @@
 (register-handler-fx
  :set-chat-input-text
  [trim-v]
- (fn [{{:keys [current-chat-id chats chat-ui-props] :as db} :db} [text chat-id]]
-   (let [chat-id (or chat-id current-chat-id)]
-     {:db (assoc-in db
-                    [:chats chat-id :input-text]
-                    (input-model/text->emoji text))
-      :dispatch [:update-suggestions chat-id text]})))
+ (fn [{:keys [db]} [text]]
+   (set-chat-input-text db text)))
 
 (register-handler-fx
  :add-to-chat-input-text
  [trim-v]
- (fn [{{:keys [chats current-chat-id]} :db} [text-to-add]]
-   (let [input-text (get-in chats [current-chat-id :input-text])]
-     {:dispatch [:set-chat-input-text (str input-text text-to-add)]})))
+ (fn [{:keys [db]} [text-to-add]]
+   (set-chat-input-text db text-to-add :append? true)))
 
 (register-handler-fx
  :select-chat-input-command
  [trim-v]
- (fn [{{:keys [current-chat-id chat-ui-props]} :db}
+ (fn [{{:keys [current-chat-id chat-ui-props] :as db} :db}
       [{:keys [prefill prefill-bot-db sequential-params name] :as command} metadata prevent-auto-focus?]]
-   (cond-> {:dispatch-n [[:set-chat-input-text (str (chat-utils/command-name command)
-                                                    const/spacing-char
-                                                    (when-not sequential-params
-                                                      (input-model/join-command-args prefill)))]
-                         [:clear-bot-db]
-                         [:set-chat-input-metadata metadata]
-                         [:set-chat-ui-props {:show-suggestions?   false
-                                              :result-box          nil
-                                              :validation-messages nil
-                                              :prev-command        name}]
-                         [:load-chat-parameter-box command 0]]}
+   (let [fx (-> db
+                (set-chat-input-metadata metadata)
+                (set-chat-input-text (str (chat-utils/command-name command)
+                                          const/spacing-char
+                                          (when-not sequential-params
+                                            (input-model/join-command-args prefill)))))]
+     (cond-> (assoc fx :dispatch-n [[:clear-bot-db]
+                                    [:set-chat-ui-props {:show-suggestions?   false
+                                                         :result-box          nil
+                                                         :validation-messages nil
+                                                         :prev-command        name}]
+                                    [:load-chat-parameter-box command 0]])
 
-     prefill-bot-db
-     (update :dispatch-n conj [:update-bot-db {:bot current-chat-id
-                                               :db prefill-bot-db}])
+       prefill-bot-db
+       (update :dispatch-n conj [:update-bot-db {:bot current-chat-id
+                                                 :db prefill-bot-db}])
 
-     (not (and sequential-params
-               prevent-auto-focus?))
-     (update :dispatch-n conj [:chat-input-focus :input-ref])
+       (not (and sequential-params
+                 prevent-auto-focus?))
+       (update :dispatch-n conj [:chat-input-focus :input-ref])
 
-     sequential-params
-     (assoc :dispatch-later (cond-> [{:ms 100 :dispatch [:set-chat-seq-arg-input-text
-                                                         (str/join const/spacing-char prefill)]}]
-                              (not prevent-auto-focus?)
-                              (conj {:ms 100 :dispatch [:chat-input-focus :seq-input-ref]}))))))
+       sequential-params
+       (assoc :dispatch-later (cond-> [{:ms 100 :dispatch [:set-chat-seq-arg-input-text
+                                                           (str/join const/spacing-char prefill)]}]
+                                (not prevent-auto-focus?)
+                                (conj {:ms 100 :dispatch [:chat-input-focus :seq-input-ref]})))))))
 
 (register-handler-db
  :set-chat-input-metadata
  [trim-v]
- (fn [{:keys [current-chat-id] :as db} [data chat-id]]
-   (let [chat-id (or chat-id current-chat-id)]
-     (assoc-in db [:chats chat-id :input-metadata] data))))
+ (fn [db [data]]
+   (set-chat-input-metadata db data)))
 
 (register-handler-fx
  :set-command-argument
@@ -173,31 +222,8 @@
 
 (register-handler-fx
  :update-suggestions
- [trim-v]
- (fn [{{:keys [current-chat-id] :as db} :db} [chat-id text]]
-   (let [chat-id         (or chat-id current-chat-id)
-         chat-text       (str/trim (or text (get-in db [:chats chat-id :input-text]) ""))
-         requests        (->> (suggestions/get-request-suggestions db chat-text)
-                              (remove (fn [{:keys [type]}]
-                                        (= type :grant-permissions))))
-         commands        (suggestions/get-command-suggestions db chat-text)
-         global-commands (suggestions/get-global-command-suggestions db chat-text)
-         all-commands    (->> (into global-commands commands)
-                              (remove (fn [[k {:keys [hidden?]}]] hidden?))
-                              (into {}))
-         {:keys [dapp?]} (get-in db [:contacts/contacts chat-id])
-         new-db          (cond-> db
-                           true (assoc-in [:chats chat-id :request-suggestions] requests)
-                           true (assoc-in [:chats chat-id :command-suggestions] all-commands)
-                           (and dapp?
-                                (str/blank? chat-text))
-                           (assoc-in [:chats chat-id :parameter-box :message] nil))
-         new-event       (when (and dapp?
-                                    (not (str/blank? chat-text))
-                                    (every? empty? [requests commands]))
-                           [::check-dapp-suggestions chat-id chat-text])]
-     (cond-> {:db new-db}
-       new-event (assoc :dispatch new-event)))))
+ (fn [{:keys [db]} _]
+   (update-suggestions db)))
 
 (register-handler-fx
  :load-chat-parameter-box
@@ -238,21 +264,23 @@
 (register-handler-fx
  ::send-message
  [trim-v]
- (fn [{{:keys [current-public-key current-account-id] :as db} :db} [command chat-id]]
-   (let [text (get-in db [:chats chat-id :input-text])
+ (fn [{{:keys [current-public-key current-account-id current-chat-id] :as db} :db} [command]]
+   (let [text (get-in db [:chats current-chat-id :input-text])
          data   {:message  text
                  :command  command
-                 :chat-id  chat-id
+                 :chat-id  current-chat-id
                  :identity current-public-key
                  :address  current-account-id}
-         events [[:set-chat-input-text nil chat-id]
-                 [:set-chat-input-metadata nil chat-id]
-                 [:set-chat-ui-props {:sending-in-progress? false}]]]
-     {:dispatch-n (if command
-                    (conj events [:check-commands-handlers! data])
-                    (if (str/blank? text)
-                      events
-                      (conj events [:prepare-message data])))})))
+         events [[:set-chat-ui-props {:sending-in-progress? false}]]
+         cofx   (-> db
+                    (set-chat-input-metadata nil)
+                    (set-chat-input-text nil))]
+     (-> cofx
+         (assoc :dispatch-n (if command
+                              (conj events [:check-commands-handlers! data])
+                              (if (str/blank? text)
+                                events
+                                (conj events [:prepare-message data]))))))))
 
 (register-handler-fx
  :proceed-command
@@ -264,7 +292,7 @@
          on-send-params           (merge params
                                          {:data-type           :on-send
                                           :event-after-creator (fn [_ jail-response]
-                                                                 [::send-command jail-response content chat-id])})
+                                                                 [::send-command jail-response content])})
          after-validation-events  [[::request-command-data on-send-params]]
          validation-params        (merge params
                                          {:data-type           :validator
@@ -305,7 +333,7 @@
 (register-handler-fx
  ::send-command
  [trim-v]
- (fn [_ [on-send {{:keys [fullscreen bot]} :command :as content} chat-id]]
+ (fn [{{:keys [current-chat-id]} :db} [on-send {{:keys [fullscreen bot]} :command :as content}]]
    (if on-send
      {:dispatch-n (cond-> [[:set-chat-ui-props {:result-box           on-send
                                                 :sending-in-progress? false}]]
@@ -314,11 +342,11 @@
       ::dismiss-keyboard nil}
      {:dispatch [::request-command-data
                  {:content             content
-                  :chat-id             chat-id
-                  :jail-id             (or bot chat-id)
+                  :chat-id             current-chat-id
+                  :jail-id             (or bot current-chat-id)
                   :data-type           :preview
                   :event-after-creator (fn [command-message _]
-                                         [::send-message command-message chat-id])}]})))
+                                         [::send-message command-message])}]})))
 
 (register-handler-fx
  ::request-command-data
@@ -378,20 +406,9 @@
                                  [[:set-chat-ui-props {:sending-in-progress? false}]
                                   (when-not (input-model/text-ends-with-space? text)
                                     [:set-chat-input-text (str text const/spacing-char)])]))
-                             [[::send-message nil current-chat-id]])]
+                             [[::send-message nil]])]
      {:dispatch-n (into [set-chat-ui-props-event]
                         (remove nil? additional-events))})))
-
-(register-handler-fx
- ::check-dapp-suggestions
- [trim-v]
- (fn [{{:keys [current-account-id] :as db} :db} [chat-id text]]
-   (let [data (get-in db [:local-storage chat-id])]
-     {:chat-fx/call-jail-function {:chat-id    chat-id
-                                   :function   :on-message-input-change
-                                   :parameters {:message text}
-                                   :context    {:data data
-                                                :from current-account-id}}})))
 
 (register-handler-db
  :clear-seq-arguments
