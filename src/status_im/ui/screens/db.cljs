@@ -34,8 +34,11 @@
                                           :photo-path nil}
              :discoveries                {}
              :discover-search-tags       '()
+             ;; XXX: I don't understand why it starts with :tags and then goes to discoveries/tags?
              :tags                       []
              :sync-state                 :done
+             ;; TODO: wallet stuff?
+             :wallet                     {}
              :network                    :testnet})
 
 
@@ -174,4 +177,5 @@
                   :discoveries/tags
                   :discoveries/current-tag
                   :discoveries/request-discoveries-timer
-                  :discoveries/new-discover]))
+                  :discoveries/new-discover
+                  :wallet/wallet]))

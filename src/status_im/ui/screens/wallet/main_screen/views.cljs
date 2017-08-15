@@ -54,11 +54,11 @@
                    :text-style st/action-button-text-disabled
                    :text "Exchange"}]])
 
-(defn main-section []
+(defn main-section [balance]
   [rn/view {:style st/main-section}
    [rn/view {:style st/total-balance-container}
     [rn/view {:style st/total-balance}
-     [rn/text {:style st/total-balance-value} "12.43"]
+     [rn/text {:style st/total-balance-value} balance] ;; XXX: ETH Test
      [rn/text {:style st/total-balance-currency} "USD"]]
     [rn/view {:style st/value-variation}
      [rn/text {:style st/value-variation-title} "Total value"]
@@ -89,8 +89,13 @@
     [rn/view
      [asset-list-item row]]]))
 
-(defn asset-section []
-  (let [assets {"eth" {:currency :eth :amount 0.445}
+;; TODO: Put these JS-y methods in namespace
+;; TODO: Have something that subscribes to these values
+;; TODO: Have something that re-runs and check this
+
+(defn asset-section [balance]
+  (let [_ (println "***balance:" balance)
+        assets {"eth" {:currency :eth :amount balance} ;;{:currency :eth :amount 0.445}
                 "snt" {:currency :snt :amount 1}
                 "gno" {:currency :gno :amount 0.024794}}]
     [rn/view {:style st/asset-section}
@@ -99,10 +104,13 @@
                     :renderSeparator (when platform/ios? (render-separator-fn (count assets)))
                     :renderRow       render-row-fn}]]))
 
+;; TODO(oskarth): Here atm, figure out how you are calling letsubs wrong
+;; (letsubs [balance [:get-in [:wallet :balance]]
+;; also what's up with defview macro and [] vs (letsubs ...) syntax?
 (defview wallet []
   []
-  [rn/view {:style st/wallet-container}
-   [toolbar-view]
-   [rn/scroll-view
-    [main-section]
-    [asset-section]]])
+    [rn/view {:style st/wallet-container}
+      [toolbar-view]
+      [rn/scroll-view
+      [main-section]
+      [asset-section "0xaa" #_balance]]])

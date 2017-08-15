@@ -58,6 +58,11 @@
                     :rpc-url rpc-url))
         db))))
 
+;; Similar to this but this seems like one more level of indirection
+;;(dispatch [:set :sync-data state])
+;;(dispatch [:set :wallet {:balance "foo"}]))
+;; Where's :set logic anyway?
+
 (register-handler :update-sync-state
   (u/side-effect!
     (fn [{:keys [sync-state sync-data]} [_ error sync]]
@@ -74,10 +79,14 @@
                                 :done
                                 :synced))]
         (when (and (not= sync-data state) (= :in-progress new-state))
+          ;; XXX: Open question where :set is dealt with
           (dispatch [:set :sync-data state]))
         (when (not= sync-state new-state)
           (dispatch [:set :sync-state new-state]))))))
 
+;; Oh and then it does check sync again every 10s
+;; When called first time?
+;; init-sync-listener
 (register-handler :check-sync
   (u/side-effect!
     (fn [{:keys [web3] :as db}]
@@ -89,11 +98,36 @@
             (s/execute-later #(dispatch [:check-sync]) (s/s->ms 10)))
         (s/execute-later #(dispatch [:check-sync]) (s/s->ms 10))))))
 
+;; TODO:
+;; (dispatch [:wallet-balance])
+;; Then after that subscribve and put balance in app db? :wallet key, say.
+
+(register-handler :check-wallet
+  (u/side-effect!
+    (fn [{:keys [web3 current-account-id] :as db}]
+      (if web3
+        (.getBalance
+        (.-eth web3)
+        current-account-id
+        (fn [error resp]
+          (println "**check-wallet handler: " error ":" resp) ;; XXX
+          ;; XXX: reason we can't just set here?
+          (when-not error
+            (dispatch [:set :wallet {:balance (str resp)}]))))
+        (s/execute-later #(dispatch [:check-wallet]) (s/s->ms 10))))))
+
+;;(dispatch [:update-wallet-state error sync])
+;;(dispatch [:set :wallet {:balance "foo"}]))
+
+;; ok so what does update-wallet-state do
+;; (dispatch [:check-wallet])
+
 (register-handler :initialize-sync-listener
   (fn [{:keys [sync-listening-started] :as db} _]
     (if-not sync-listening-started
       (do
         (dispatch [:check-sync])
+        (dispatch [:check-wallet]) ;; XXX: Temporary
         (assoc db :sync-listening-started true))
       db)))
 
