@@ -10,6 +10,7 @@
             [status-im.i18n :as i18n]
             [status-im.utils.listview :as lw]
             [status-im.utils.platform :as platform]
+            [status-im.utils.money :as money]
             [status-im.ui.screens.wallet.main-screen.styles :as st]))
 
 (defn toolbar-title []
@@ -54,11 +55,12 @@
                    :text-style st/action-button-text-disabled
                    :text "Exchange"}]])
 
-(defn main-section [balance]
+;; TODO: USD conversion add
+(defn main-section []
   [rn/view {:style st/main-section}
    [rn/view {:style st/total-balance-container}
     [rn/view {:style st/total-balance}
-     [rn/text {:style st/total-balance-value} balance] ;; XXX: ETH Test
+     [rn/text {:style st/total-balance-value} "12.04"]
      [rn/text {:style st/total-balance-currency} "USD"]]
     [rn/view {:style st/value-variation}
      [rn/text {:style st/value-variation-title} "Total value"]
@@ -94,8 +96,7 @@
 ;; TODO: Have something that re-runs and check this
 
 (defn asset-section [balance]
-  (let [_ (println "***balance:" balance)
-        assets {"eth" {:currency :eth :amount balance} ;;{:currency :eth :amount 0.445}
+  (let [assets {"eth" {:currency :eth :amount balance} ;;{:currency :eth :amount 0.445}
                 "snt" {:currency :snt :amount 1}
                 "gno" {:currency :gno :amount 0.024794}}]
     [rn/view {:style st/asset-section}
@@ -104,13 +105,15 @@
                     :renderSeparator (when platform/ios? (render-separator-fn (count assets)))
                     :renderRow       render-row-fn}]]))
 
-;; TODO(oskarth): Here atm, figure out how you are calling letsubs wrong
-;; (letsubs [balance [:get-in [:wallet :balance]]
-;; also what's up with defview macro and [] vs (letsubs ...) syntax?
+;; XXX: Balance per asset? How is asset tied to account?
+;; XXX `new BigNumber() not a number:` when passing nil - spec for this?
 (defview wallet []
-  []
-    [rn/view {:style st/wallet-container}
+  (letsubs [address [:get :current-account-id]
+            wallet [:get :wallet]]
+    (let [balance (:balance wallet)
+          eth (if balance (money/wei->ether balance) "...")]
+      [rn/view {:style st/wallet-container}
       [toolbar-view]
       [rn/scroll-view
-      [main-section]
-      [asset-section "0xaa" #_balance]]])
+        [main-section]
+        [asset-section eth]]])))
